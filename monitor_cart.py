@@ -1,7 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
 import os
-import time
 
 LOGIN_URL = "https://cloud.zrvvv.com/login"
 CART_URL = "https://cloud.zrvvv.com/cart"
@@ -9,7 +8,26 @@ CART_URL = "https://cloud.zrvvv.com/cart"
 EMAIL = os.getenv("EMAIL")
 PASSWORD = os.getenv("PASSWORD")
 
+TG_TOKEN = os.getenv("TG_TOKEN")
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")
+
 session = requests.Session()
+
+# 用于保存上次抓到的库存
+LAST_STATUS_FILE = "last_status.txt"
+
+
+def send_telegram(msg: str):
+    """发送 Telegram 通知"""
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TG_CHAT_ID,
+        "text": msg
+    }
+    try:
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print("Telegram 推送失败：", e)
 
 
 def login():
@@ -21,24 +39,20 @@ def login():
         "password": PASSWORD
     }
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     resp = session.post(LOGIN_URL, data=payload, headers=headers)
 
-    # 登录成功通常会重定向
     if resp.status_code in (200, 302):
         print("登录成功")
     else:
-        print("登录失败，状态码：", resp.status_code)
+        print("登录失败：", resp.status_code)
 
 
 def fetch_products():
-    """抓取购物车中的产品与库存"""
+    """抓取购物车库存"""
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = session.get(CART_URL, headers=headers, timeout=10)
+        resp = session.get(CART_URL, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -64,23 +78,54 @@ def fetch_products():
         return result
 
     except Exception as e:
-        print("请求失败：", e)
+        print("抓取库存失败：", e)
         return None
+
+
+def load_last_status():
+    if not os.path.exists(LAST_STATUS_FILE):
+        return {}
+
+    data = {}
+    with open(LAST_STATUS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            name, stock = line.strip().split(":::")
+            data[name] = stock
+    return data
+
+
+def save_last_status(status):
+    with open(LAST_STATUS_FILE, "w", encoding="utf-8") as f:
+        for name, stock in status.items():
+            f.write(f"{name}:::{stock}\n")
 
 
 def main():
     login()
 
-    print("开始抓取库存...")
-
+    print("正在抓取库存...")
     products = fetch_products()
     if not products:
-        print("抓取失败")
         return
 
-    print("当前库存：")
+    last_status = load_last_status()
+
+    # 第一次运行（无历史记录）
+    if not last_status:
+        print("首次运行，保存库存状态")
+        save_last_status(products)
+        return
+
+    # 对比库存变化
     for name, stock in products.items():
-        print(f" - {name}: {stock}")
+        old_stock = last_status.get(name)
+
+        if old_stock != stock:
+            msg = f"库存变化：{name}\n{old_stock} → {stock}"
+            print(msg)
+            send_telegram(msg)
+
+    save_last_status(products)
 
 
 if __name__ == "__main__":
