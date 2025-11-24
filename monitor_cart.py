@@ -5,9 +5,11 @@ import time
 URL = "https://cloud.zrvvv.com/cart"
 
 # 换成你自己的 Cookie！！
+import os
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
-    "Cookie": "你的 cookie 放这里"
+    "Cookie": os.getenv("COOKIE")
 }
 
 last_status = {}   # 保存上次库存状态
