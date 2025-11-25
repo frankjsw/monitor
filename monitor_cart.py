@@ -111,6 +111,14 @@ def save_last_status(status):
     print("已写入状态文件 →", LAST_STATUS_FILE)
 
 
+def format_current_status(products):
+    """格式化当前库存状态为字符串"""
+    status = "当前库存状态:\n"
+    for name, stock in products.items():
+        status += f"{name}: {stock}\n"
+    return status
+
+
 def main():
     login()
 
@@ -118,6 +126,12 @@ def main():
     products = fetch_products()
     if not products:
         return
+
+    # 格式化当前库存状态
+    current_status = format_current_status(products)
+
+    # 发送当前库存状态到 Telegram
+    send_telegram(current_status)
 
     last_status = load_last_status()
 
@@ -140,5 +154,4 @@ def main():
 
 
 if __name__ == "__main__":
-    print("状态文件路径：", LAST_STATUS_FILE)
     main()
