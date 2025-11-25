@@ -13,8 +13,9 @@ TG_CHAT_ID = os.getenv("TG_CHAT_ID")
 
 session = requests.Session()
 
-# 用于保存上次抓到的库存
-LAST_STATUS_FILE = "last_status.txt"
+# --- 关键修复：使用脚本所在目录存状态 ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LAST_STATUS_FILE = os.path.join(BASE_DIR, "last_status.txt")
 
 
 def send_telegram(msg: str):
@@ -83,21 +84,31 @@ def fetch_products():
 
 
 def load_last_status():
+    """加载上次库存状态"""
     if not os.path.exists(LAST_STATUS_FILE):
+        print("未发现上次状态文件")
         return {}
 
     data = {}
     with open(LAST_STATUS_FILE, "r", encoding="utf-8") as f:
         for line in f:
-            name, stock = line.strip().split(":::")
+            parts = line.strip().split(":::")
+            if len(parts) != 2:
+                continue
+            name, stock = parts
             data[name] = stock
+
+    print("读取到上次状态：", data)
     return data
 
 
 def save_last_status(status):
+    """保存当前库存状态"""
     with open(LAST_STATUS_FILE, "w", encoding="utf-8") as f:
         for name, stock in status.items():
             f.write(f"{name}:::{stock}\n")
+
+    print("已写入状态文件 →", LAST_STATUS_FILE)
 
 
 def main():
@@ -129,4 +140,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print("状态文件路径：", LAST_STATUS_FILE)
     main()
