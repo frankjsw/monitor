@@ -35,7 +35,7 @@ jobs:
       # 5️⃣ 可选：上传日志或抓取结果
       - name: Upload log
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: monitor-log
           path: monitor.log   # 假设你的脚本写日志到 monitor.log
