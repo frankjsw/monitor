@@ -20,36 +20,54 @@ def send_telegram(text):
 
 
 # =====================================================
-# 自动扫描所有 fid（主分类）
+# 解析 productType & availability zones 映射表
 # =====================================================
-def scan_all_fid():
+def parse_select_mappings():
+    """自动抓取产品类型（fid）和可用区（gid）文字名称"""
     html = requests.get(BASE_URL + "?fid=1", headers=HEADERS).text
 
-    # 寻找所有 /cart?fid=数字 的链接
-    fids = set(map(int, re.findall(r"/cart\?fid=(\d+)", html)))
+    # 解析 productType 字典
+    fid_map = dict(re.findall(
+        r'<option value="(\d+)">(.*?)</option>',
+        re.search(r'id="productType".*?</select>', html, re.S).group()
+    ))
 
-    # 确保至少有 fid=1
-    if 1 not in fids:
-        fids.add(1)
+    # 解析 availabilityZones 字典
+    gid_map = dict(re.findall(
+        r'<option value="(\d+)">(.*?)</option>',
+        re.search(r'id="availabilityZones".*?</select>', html, re.S).group()
+    ))
 
-    return sorted(fids)
+    return fid_map, gid_map
 
 
 # =====================================================
-# 自动扫描某个 fid 下的所有 gid
+# 自动扫描所有 fid（产品类型）
+# =====================================================
+def scan_all_fid(fid_map):
+    return sorted(map(int, fid_map.keys()))
+
+
+# =====================================================
+# 自动扫描某个 fid 下的所有 gid（可用区）
 # =====================================================
 def scan_gid_for_fid(fid):
     url = f"{BASE_URL}?fid={fid}"
     html = requests.get(url, headers=HEADERS).text
 
-    # 寻找 /cart?fid=1&gid=数字
-    gids = set(map(int, re.findall(r"cart\?fid=" + str(fid) + r"&gid=(\d+)", html)))
+    # 可能的 gid（但有误扫风险）
+    gids = set(map(int, re.findall(fr"cart\?fid={fid}&gid=(\d+)", html)))
+    gids = [g for g in gids if g > 1]  # gid=1 是默认区，跳过
 
-    # 默认 gid=1 等于无 gid（fid=1 页面）
-    # 我们只返回 gid>1，因为 gid=1 与 fid=1 重复
-    gids = sorted([g for g in gids if g > 1])
+    valid_gids = []
 
-    return gids
+    # 二次验证：gid 页面是否真实存在商品
+    for gid in gids:
+        items = fetch_items(fid, gid)
+        if len(items) > 0:
+            valid_gids.append(gid)
+
+    return sorted(valid_gids)
 
 
 # =====================================================
@@ -83,26 +101,24 @@ def save_now(data):
 
 
 # =====================================================
-# 变化比较
+# 比较变化
 # =====================================================
-def compare(old, new, region):
+def compare(old, new, region_name):
     changes = []
 
     old_map = {i["name"]: i["inventory"] for i in old}
     new_map = {i["name"]: i["inventory"] for i in new}
 
-    # 变化 & 新增
     for name, new_inv in new_map.items():
         old_inv = old_map.get(name)
         if old_inv is None:
-            changes.append(f"🆕 区域 {region} 新增商品：{name} 库存 {new_inv}")
+            changes.append(f"🆕 {region_name} 新增商品：{name} 库存 {new_inv}")
         elif old_inv != new_inv:
-            changes.append(f"🔔 区域 {region} 商品《{name}》库存 {old_inv} → {new_inv}")
+            changes.append(f"🔔 {region_name} 商品《{name}》库存 {old_inv} → {new_inv}")
 
-    # 下架
     for name in old_map:
         if name not in new_map:
-            changes.append(f"❌ 区域 {region} 下架商品：{name}")
+            changes.append(f"❌ {region_name} 下架商品：{name}")
 
     return "\n".join(changes) if changes else None
 
@@ -111,53 +127,55 @@ def compare(old, new, region):
 # 主逻辑
 # =====================================================
 def main():
+    fid_map, gid_map = parse_select_mappings()
+
     last = load_last()
     now_all = {}
     messages = []
 
-    # 1. 自动扫描所有 fid
-    fids = scan_all_fid()
+    fids = scan_all_fid(fid_map)
 
     for fid in fids:
 
-        # ① fid 默认区域（等价 gid=1）
-        region_key = f"fid={fid}"
+        # 默认区（gid=1）
+        region_name = f"{fid_map[str(fid)]}（默认区域）"
+        region_key = f"{fid}-1"
+
         items = fetch_items(fid)
         now_all[region_key] = items
 
-        # 首次记录
         if region_key not in last:
-            msg = [f"📌 首次记录区域 {region_key}"]
+            msg = [f"📌 首次记录区域 {region_name}"]
             for i in items:
                 msg.append(f"{i['name']} 数量：{i['inventory']}")
             messages.append("\n".join(msg))
         else:
-            diff = compare(last[region_key], items, region_key)
+            diff = compare(last[region_key], items, region_name)
             if diff:
                 messages.append(diff)
 
-        # 2. 自动扫描 fid 下的 gid > 1
+        # 其它 gid（自动扫描）
         gids = scan_gid_for_fid(fid)
 
         for gid in gids:
-            region_key = f"fid={fid}&gid={gid}"
+            region_name = f"{fid_map[str(fid)]}（{gid_map[str(gid)]}）"
+            region_key = f"{fid}-{gid}"
+
             items = fetch_items(fid, gid)
             now_all[region_key] = items
 
             if region_key not in last:
-                msg = [f"📌 首次记录区域 {region_key}"]
+                msg = [f"📌 首次记录区域 {region_name}"]
                 for i in items:
                     msg.append(f"{i['name']} 数量：{i['inventory']}")
                 messages.append("\n".join(msg))
             else:
-                diff = compare(last[region_key], items, region_key)
+                diff = compare(last[region_key], items, region_name)
                 if diff:
                     messages.append(diff)
 
-    # 保存记录
     save_now(now_all)
 
-    # 发送通知
     if messages:
         final = "\n\n".join(messages)
         print(final)
