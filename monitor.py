@@ -1,83 +1,99 @@
-# monitor.py
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
 import requests
+from bs4 import BeautifulSoup
 import time
 
-# 配置
-URL = "https://cloud.zrvvv.com"
-SCAN_INTERVAL = 300  # 扫描间隔，秒
+# ----------------- 配置 -----------------
+BASE_URL = "https://cloud.zrvvv.com"  # 替换为你的目标域名
+CHECK_INTERVAL = 60  # 秒
 
-# 保存上次库存状态
-last_stock = {}
+# 映射 fid -> product type
+product_type_map = {
+    "1": "cloud.zrvvv.com",
+    "2": "anotherProductType"
+}
 
-def parse_select_mappings():
-    """自动抓取 product types 和 availability zones"""
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(URL)
-        page.wait_for_load_state("networkidle")
-        html = page.content()
-        browser.close()
+# 映射 gid -> availability zones
+availability_zone_map = {
+    "1": "活跃福利",
+    "2": "其他zone"
+}
 
+# ----------------- 抓取函数 -----------------
+def fetch_html(url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    return resp.text
+
+def parse_products(html):
+    """
+    返回数据结构：
+    {
+        fid: {
+            gid: [
+                {"name": "HK-①号", "qty": 0},
+                ...
+            ]
+        }
+    }
+    """
     soup = BeautifulSoup(html, "html.parser")
+    result = {}
+    
+    # 遍历每个商品的 div
+    items = soup.select("div.secondgroup_item")
+    for item in items:
+        onclick = item.get("onclick", "")
+        # 从 onclick 中解析 fid 和 gid
+        fid, gid = "1", "1"
+        if "fid=" in onclick and "gid=" in onclick:
+            try:
+                parts = onclick.split("?")[1].split("&")
+                for part in parts:
+                    if part.startswith("fid="):
+                        fid = part.split("=")[1]
+                    elif part.startswith("gid="):
+                        gid = part.split("=")[1]
+            except Exception:
+                pass
+        
+        # 商品名称
+        name_tag = item.select_one("a.yy-bth-text-a")
+        name = name_tag.get_text(strip=True) if name_tag else "未知商品"
 
-    product_type_select = soup.find("select", id="productType")
-    if not product_type_select:
-        raise ValueError("页面中没有找到 productType 下拉菜单")
-    fid_map = {opt['value']: opt.text.strip() for opt in product_type_select.find_all('option') if opt.get('value')}
+        # 商品数量
+        qty_tag = item.select_one("g-b")
+        qty = int(qty_tag.get_text(strip=True)) if qty_tag and qty_tag.get_text(strip=True).isdigit() else 0
 
-    availability_select = soup.find("select", id="availabilityZone")
-    if not availability_select:
-        gid_map = {}
-    else:
-        gid_map = {opt['value']: opt.text.strip() for opt in availability_select.find_all('option') if opt.get('value')}
+        result.setdefault(fid, {}).setdefault(gid, []).append({"name": name, "qty": qty})
 
-    return fid_map, gid_map
+    return result
 
-def fetch_stock(fid, gid=None):
-    """请求库存接口，返回 {商品名称: 数量}"""
-    # 假设库存接口示例：https://cloud.zrvvv.com/api/stock?fid=1&gid=2
-    params = {'fid': fid}
-    if gid:
-        params['gid'] = gid
-    resp = requests.get(f"{URL}/api/stock", params=params)
-    data = resp.json()
-    stock = {item['name']: item['quantity'] for item in data.get('products', [])}
-    return stock
+# ----------------- 打印函数 -----------------
+def print_stock(data):
+    for fid, gid_dict in data.items():
+        for gid, items in gid_dict.items():
+            # 只有 gid>1 才显示 availability zone
+            gid_display = availability_zone_map.get(gid) if gid != "1" else None
+            if gid_display:
+                print(f"📌 首次记录区域 {product_type_map.get(fid, fid)} & {gid_display}")
+            else:
+                print(f"📌 首次记录区域 {product_type_map.get(fid, fid)}")
+            for item in items:
+                print(f"{item['name']}  数量：{item['qty']}")
+            print()
 
-def monitor():
-    global last_stock
-    fid_map, gid_map = parse_select_mappings()
-
-    for fid, product_name in fid_map.items():
-        # 先抓 fid 对应库存
-        stock_fid = fetch_stock(fid)
-        print(f"\n📌 首次记录区域 {product_name}")
-        for name, qty in stock_fid.items():
-            print(f"{name} 数量：{qty}")
-
-        last_stock[(fid, None)] = stock_fid
-
-        # 再抓 fid&gid 对应库存（只抓 gid>1 的情况）
-        for gid, zone_name in gid_map.items():
-            stock_fid_gid = fetch_stock(fid, gid)
-            # 如果 fid 只有默认 gid=1，不用推送
-            if len(gid_map) <= 1:
-                continue
-            print(f"\n📌 首次记录区域 {product_name} & {zone_name}")
-            for name, qty in stock_fid_gid.items():
-                print(f"{name} 数量：{qty}")
-            last_stock[(fid, gid)] = stock_fid_gid
-
+# ----------------- 主循环 -----------------
 def main():
+    print("开始监控...")
     while True:
         try:
-            monitor()
+            html = fetch_html(BASE_URL)
+            data = parse_products(html)
+            print_stock(data)
         except Exception as e:
-            print("监控出错:", e)
-        time.sleep(SCAN_INTERVAL)
+            print("抓取失败:", e)
+        time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
     main()
