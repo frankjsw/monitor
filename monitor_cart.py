@@ -1,156 +1,66 @@
+import re
 import requests
-from bs4 import BeautifulSoup
+import json
 import os
 
-LOGIN_URL = "https://cloud.zrvvv.com/login"
-CART_URL = "https://cloud.zrvvv.com/cart"
+URL = "https://cloud.zrvvv.com/cart?fid=1"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+}
 
-EMAIL = os.getenv("EMAIL")
-PASSWORD = os.getenv("PASSWORD")
+# === Telegram 通知（可选） ===
+TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
 
-TG_TOKEN = os.getenv("TG_TOKEN")
-TG_CHAT_ID = os.getenv("TG_CHAT_ID")
-
-session = requests.Session()
-
-# --- 关键修复：使用脚本所在目录存状态 ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LAST_STATUS_FILE = os.path.join(BASE_DIR, "last_status.txt")
-
-
-def send_telegram(msg: str):
-    """发送 Telegram 通知"""
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TG_CHAT_ID,
-        "text": msg
-    }
-    try:
-        requests.post(url, data=payload, timeout=10)
-    except Exception as e:
-        print("Telegram 推送失败：", e)
+def send_telegram(text):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(api, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
 
-def login():
-    """自动登录并获取 session"""
-    print("正在登录...")
-
-    payload = {
-        "email": EMAIL,
-        "password": PASSWORD
-    }
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-
-    resp = session.post(LOGIN_URL, data=payload, headers=headers)
-
-    if resp.status_code in (200, 302):
-        print("登录成功")
-    else:
-        print("登录失败：", resp.status_code)
+def fetch_inventory():
+    html = requests.get(URL, headers=HEADERS, timeout=20).text
+    # 匹配所有 inventory 数字
+    nums = re.findall(r"inventory\s*：\s*(\d+)", html)
+    return list(map(int, nums))
 
 
-def fetch_products():
-    """抓取购物车库存"""
-    try:
-        resp = session.get(CART_URL, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        items = soup.select("div.card.cartitem")
-        result = {}
-
-        for item in items:
-            name_tag = item.find("h4")
-            if not name_tag:
-                continue
-
-            name = name_tag.text.strip()
-
-            stock_tag = item.find("p", class_="card-text")
-            if stock_tag and "库存" in stock_tag.text:
-                stock = stock_tag.text.replace("库存：", "").strip()
-            else:
-                stock = "未知"
-
-            result[name] = stock
-
-        return result
-
-    except Exception as e:
-        print("抓取库存失败：", e)
+def load_last():
+    if not os.path.exists("inventory.json"):
         return None
+    with open("inventory.json", "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-def load_last_status():
-    """加载上次库存状态"""
-    if not os.path.exists(LAST_STATUS_FILE):
-        print("未发现上次状态文件")
-        return {}
-
-    data = {}
-    with open(LAST_STATUS_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.strip().split(":::")
-            if len(parts) != 2:
-                continue
-            name, stock = parts
-            data[name] = stock
-
-    print("读取到上次状态：", data)
-    return data
-
-
-def save_last_status(status):
-    """保存当前库存状态"""
-    with open(LAST_STATUS_FILE, "w", encoding="utf-8") as f:
-        for name, stock in status.items():
-            f.write(f"{name}:::{stock}\n")
-
-    print("已写入状态文件 →", LAST_STATUS_FILE)
-
-
-def format_current_status(products):
-    """格式化当前库存状态为字符串"""
-    status = "当前库存状态:\n"
-    for name, stock in products.items():
-        status += f"{name}: {stock}\n"
-    return status
+def save_inventory(data):
+    with open("inventory.json", "w", encoding="utf-8") as f:
+        json.dump(data, f)
 
 
 def main():
-    login()
+    now = fetch_inventory()
+    print("当前库存：", now)
 
-    print("正在抓取库存...")
-    products = fetch_products()
-    if not products:
+    last = load_last()
+
+    if last is None:
+        print("首次运行，创建库存记录")
+        save_inventory(now)
         return
 
-    # 格式化当前库存状态
-    current_status = format_current_status(products)
+    # 比较差异
+    changed = []
+    for i, (l, n) in enumerate(zip(last, now)):
+        if l != n:
+            changed.append(f"商品 #{i+1} 库存变化：{l} → {n}")
 
-    # 发送当前库存状态到 Telegram
-    send_telegram(current_status)
+    if changed:
+        msg = "库存变化提醒：\n" + "\n".join(changed)
+        print(msg)
+        send_telegram(msg)
 
-    last_status = load_last_status()
-
-    # 第一次运行（无历史记录）
-    if not last_status:
-        print("首次运行，保存库存状态")
-        save_last_status(products)
-        return
-
-    # 对比库存变化
-    for name, stock in products.items():
-        old_stock = last_status.get(name)
-
-        if old_stock != stock:
-            msg = f"库存变化：{name}\n{old_stock} → {stock}"
-            print(msg)
-            send_telegram(msg)
-
-    save_last_status(products)
+    save_inventory(now)
 
 
 if __name__ == "__main__":
