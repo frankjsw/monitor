@@ -4,21 +4,11 @@ import json
 import os
 
 BASE_URL = "https://cloud.zrvvv.com/cart"
-
-# ===============================
-# 配置要监控的区域
-# ===============================
-TARGETS = [
-    {"fid": 1, "gid": None},
-    {"fid": 1, "gid": 1},
-    {"fid": 2, "gid": None},   # <<< 已加入 fid=2
-]
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
 
-# ========== Telegram 通知（可选） ==========
+# Telegram（可选）
 TELEGRAM_TOKEN = os.getenv("TG_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TG_CHAT_ID")
 
@@ -29,106 +19,149 @@ def send_telegram(text):
     requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
 
-# ======================================
-# 抓取 HTML
-# ======================================
-def fetch_html(fid, gid=None):
+# =====================================================
+# 自动扫描所有 fid（主分类）
+# =====================================================
+def scan_all_fid():
+    html = requests.get(BASE_URL + "?fid=1", headers=HEADERS).text
+
+    # 寻找所有 /cart?fid=数字 的链接
+    fids = set(map(int, re.findall(r"/cart\?fid=(\d+)", html)))
+
+    # 确保至少有 fid=1
+    if 1 not in fids:
+        fids.add(1)
+
+    return sorted(fids)
+
+
+# =====================================================
+# 自动扫描某个 fid 下的所有 gid
+# =====================================================
+def scan_gid_for_fid(fid):
+    url = f"{BASE_URL}?fid={fid}"
+    html = requests.get(url, headers=HEADERS).text
+
+    # 寻找 /cart?fid=1&gid=数字
+    gids = set(map(int, re.findall(r"cart\?fid=" + str(fid) + r"&gid=(\d+)", html)))
+
+    # 默认 gid=1 等于无 gid（fid=1 页面）
+    # 我们只返回 gid>1，因为 gid=1 与 fid=1 重复
+    gids = sorted([g for g in gids if g > 1])
+
+    return gids
+
+
+# =====================================================
+# 抓取商品
+# =====================================================
+def fetch_items(fid, gid=None):
     params = f"?fid={fid}"
     if gid is not None:
         params += f"&gid={gid}"
-    url = BASE_URL + params
-    print("Fetching:", url)
-    return requests.get(url, headers=HEADERS, timeout=20).text
 
+    html = requests.get(BASE_URL + params, headers=HEADERS).text
 
-# ======================================
-# 解析商品名称 + 库存
-# ======================================
-def parse_inventory(html):
     names = re.findall(r"<h4>(.*?)</h4>", html)
     invs = list(map(int, re.findall(r"inventory\s*：\s*(\d+)", html)))
 
-    items = []
-    for name, inv in zip(names, invs):
-        items.append({"name": name, "inventory": inv})
-    return items
+    return [{"name": n, "inventory": i} for n, i in zip(names, invs)]
 
 
-# ======================================
-# JSON 操作
-# ======================================
+# =====================================================
+# JSON 记录
+# =====================================================
 def load_last():
     if not os.path.exists("inventory.json"):
         return {}
-    with open("inventory.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+    return json.load(open("inventory.json", "r", encoding="utf-8"))
 
 
-def save_inventory(data):
-    with open("inventory.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def save_now(data):
+    json.dump(data, open("inventory.json", "w", encoding="utf-8"),
+              ensure_ascii=False, indent=2)
 
 
-# ======================================
-# 区域比较
-# ======================================
-def compare_changes(region, old, new):
+# =====================================================
+# 变化比较
+# =====================================================
+def compare(old, new, region):
     changes = []
 
     old_map = {i["name"]: i["inventory"] for i in old}
     new_map = {i["name"]: i["inventory"] for i in new}
 
+    # 变化 & 新增
     for name, new_inv in new_map.items():
         old_inv = old_map.get(name)
         if old_inv is None:
-            changes.append(f"🆕 区域 {region} 新增商品：{name}，库存 {new_inv}")
+            changes.append(f"🆕 区域 {region} 新增商品：{name} 库存 {new_inv}")
         elif old_inv != new_inv:
-            changes.append(f"🔔 区域 {region} 商品《{name}》库存变化： {old_inv} → {new_inv}")
+            changes.append(f"🔔 区域 {region} 商品《{name}》库存 {old_inv} → {new_inv}")
 
+    # 下架
     for name in old_map:
         if name not in new_map:
-            changes.append(f"❌ 区域 {region} 商品下架：{name}")
+            changes.append(f"❌ 区域 {region} 下架商品：{name}")
 
     return "\n".join(changes) if changes else None
 
 
-# ======================================
-# 主流程
-# ======================================
+# =====================================================
+# 主逻辑
+# =====================================================
 def main():
     last = load_last()
     now_all = {}
-
     messages = []
 
-    for t in TARGETS:
-        fid, gid = t["fid"], t["gid"]
-        region_key = f"fid={fid}&gid={gid}" if gid is not None else f"fid={fid}"
+    # 1. 自动扫描所有 fid
+    fids = scan_all_fid()
 
-        html = fetch_html(fid, gid)
-        now = parse_inventory(html)
-        now_all[region_key] = now
+    for fid in fids:
 
-        # === 首次记录：推送详细商品数据 ===
+        # ① fid 默认区域（等价 gid=1）
+        region_key = f"fid={fid}"
+        items = fetch_items(fid)
+        now_all[region_key] = items
+
+        # 首次记录
         if region_key not in last:
             msg = [f"📌 首次记录区域 {region_key}"]
-            for item in now:
-                msg.append(f"{item['name']}  数量：{item['inventory']}")
+            for i in items:
+                msg.append(f"{i['name']} 数量：{i['inventory']}")
             messages.append("\n".join(msg))
-            continue
+        else:
+            diff = compare(last[region_key], items, region_key)
+            if diff:
+                messages.append(diff)
 
-        # === 检查变化 ===
-        old_list = last[region_key]
-        diff_msg = compare_changes(region_key, old_list, now)
-        if diff_msg:
-            messages.append(diff_msg)
+        # 2. 自动扫描 fid 下的 gid > 1
+        gids = scan_gid_for_fid(fid)
 
-    save_inventory(now_all)
+        for gid in gids:
+            region_key = f"fid={fid}&gid={gid}"
+            items = fetch_items(fid, gid)
+            now_all[region_key] = items
 
+            if region_key not in last:
+                msg = [f"📌 首次记录区域 {region_key}"]
+                for i in items:
+                    msg.append(f"{i['name']} 数量：{i['inventory']}")
+                messages.append("\n".join(msg))
+            else:
+                diff = compare(last[region_key], items, region_key)
+                if diff:
+                    messages.append(diff)
+
+    # 保存记录
+    save_now(now_all)
+
+    # 发送通知
     if messages:
-        final_msg = "\n\n".join(messages)
-        print(final_msg)
-        send_telegram(final_msg)
+        final = "\n\n".join(messages)
+        print(final)
+        send_telegram(final)
 
 
 if __name__ == "__main__":
