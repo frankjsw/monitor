@@ -26,50 +26,17 @@ def send_telegram(text):
 
 
 # =====================================================
-# 扫描所有 fid
+# 固定抓取 fid=1
 # =====================================================
 def scan_all_fid():
-    html = requests.get(BASE_URL + "?fid=1", headers=HEADERS).text
-    fids = set(map(int, re.findall(r"/cart\?fid=(\d+)", html)))
-    fids.add(1)
-    return sorted(fids)
+    return [1]
 
-
-# =====================================================
-# 扫描 fid 下所有 gid
-# =====================================================
 def scan_gid_for_fid(fid):
-    html = requests.get(f"{BASE_URL}?fid={fid}", headers=HEADERS).text
-    gids = set(map(int, re.findall(rf"cart\?fid={fid}&gid=(\d+)", html)))
-    gids.add(1)
-    return sorted(gids)
+    return [1]  # 只抓 fid=1 下 gid=1
 
 
 # =====================================================
-# 修复后的标题获取函数（不会再错！！！）
-# =====================================================
-def fetch_title(html, fid):
-    # 一级标题
-    if fid == 1:
-        m1 = re.search(r'class="text-white yy-bth-text fs-24[^"]*?">(.*?)</a>', html)
-    else:
-        m1 = re.search(r'class="yy-bth-text fs-24[^"]*?">(.*?)</a>', html)
-
-    title1 = m1.group(1).strip() if m1 else "Unknown"
-
-    # 二级 active 标题
-    m2 = re.search(
-        r'<div class="secondgroup_item[^"]*active[^"]*">.*?<a class="text-white[^>]*>(.*?)</a>',
-        html,
-        re.S
-    )
-    title2 = m2.group(1).strip() if m2 else ""
-
-    return f"{title1}-{title2}"
-
-
-# =====================================================
-# 抓取商品名称和库存
+# 优化后的抓取商品名称和库存（只抓 fid=1）
 # =====================================================
 def fetch_items(fid, gid):
     url = f"{BASE_URL}?fid={fid}&gid={gid}"
@@ -81,10 +48,7 @@ def fetch_items(fid, gid):
     # 库存
     invs = [int(n) for n in re.findall(r"inventory ：\s*(\d+)", html)]
 
-    # 标题
-    title = fetch_title(html, fid)
-
-    return title, [{"name": n, "inventory": i} for n, i in zip(names, invs)]
+    return [{"name": n, "inventory": i} for n, i in zip(names, invs)]
 
 
 # =====================================================
@@ -94,7 +58,6 @@ def load_last():
     if not os.path.exists("inventory.json"):
         return {}
     return json.load(open("inventory.json", "r", encoding="utf-8"))
-
 
 def save_now(data):
     json.dump(data, open("inventory.json", "w", encoding="utf-8"),
@@ -131,14 +94,14 @@ def main():
     now_all = {}
     messages = []
 
-    fids = scan_all_fid()
+    fids = scan_all_fid()  # 只抓 fid=1
 
     for fid in fids:
-        gids = scan_gid_for_fid(fid)
+        gids = scan_gid_for_fid(fid)  # 只抓 gid=1
 
         for gid in gids:
-            title, items = fetch_items(fid, gid)
-            region_key = title  # 用标题作为唯一键
+            items = fetch_items(fid, gid)
+            region_key = "fid=1"  # 简化标识
 
             now_all[region_key] = items
 
