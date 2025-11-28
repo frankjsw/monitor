@@ -32,8 +32,8 @@ jobs:
       # 4️⃣ 运行 monitor.py 并传入 Telegram 环境变量
       - name: Run monitor script
         env:
-          #TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          #TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python monitor.py
 
       # 5️⃣ 上传日志（可选）
