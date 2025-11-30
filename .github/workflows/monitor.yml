@@ -3,7 +3,7 @@ name: Monitor Products
 # 触发条件：定时 + 手动
 on:
   schedule:
-    - cron: '0 * * * *'  # 每小时运行一次，可以改成你需要的频率
+    - cron: '0 0 1 1 *'  # 每小时运行一次，可以改成你需要的频率
   workflow_dispatch:     # 允许手动触发
 
 jobs:
